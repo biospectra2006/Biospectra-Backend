@@ -21,15 +21,12 @@ const createSendToken = async (user, statusCode, req, res) => {
     const accessToken = signAccessToken(user._id);
     const refreshToken = signRefreshToken(user._id);
 
+    const isProd = process.env.NODE_ENV === 'production' || req.headers['x-forwarded-for'] === 'https';
     const cookieOptions = {
         httpOnly: true,
-        secure: req.secure || req.headers['x-forwarded-for'] === 'https',
-        sameSite: 'None' // Required for cross-domain (Vercel to Render)
+        secure: isProd,
+        sameSite: isProd ? 'None' : 'Lax'
     };
-
-    if (process.env.NODE_ENV === 'production' || req.headers['x-forwarded-for'] === 'https') {
-        cookieOptions.secure = true;
-    }
 
     // Set Access Token Cookie (15 mins)
     res.cookie('jwt', accessToken, {
@@ -86,6 +83,14 @@ exports.login = async (req, res) => {
             return res.status(401).json({ message: 'Invalid credentials. Please try again.' });
         }
 
+        if (user.isMfaEnabled) {
+            return res.status(200).json({
+                status: 'mfa_required',
+                userId: user._id,
+                message: 'Please complete MFA to continue'
+            });
+        }
+
         await createSendToken(user, 200, req, res);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -107,8 +112,7 @@ exports.setupMfa = async (req, res) => {
             name: `Biospectra (${user.username})`
         });
 
-        user.mfaSecret = secret.base32;
-        await user.save();
+        await User.updateOne({ _id: user._id }, { mfaSecret: secret.base32 });
 
         const qrCodeUrl = await qrcode.toDataURL(secret.otpauth_url);
 
@@ -139,8 +143,7 @@ exports.verifyMfaSetup = async (req, res) => {
             return res.status(400).json({ message: 'Invalid token. Verification failed.' });
         }
 
-        user.isMfaEnabled = true;
-        await user.save();
+        await User.updateOne({ _id: user._id }, { isMfaEnabled: true });
 
         res.status(200).json({
             status: 'success',
@@ -171,24 +174,8 @@ exports.loginMfa = async (req, res) => {
             return res.status(401).json({ message: 'Invalid MFA token' });
         }
 
-        const jwtToken = signToken(user._id);
-
-        const parser = new UAParser(req.headers['user-agent']);
-        const ua = parser.getResult();
-        
-        await Session.create({
-            userId: user._id,
-            token: jwtToken,
-            ipAddress: req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress,
-            userAgent: req.headers['user-agent'],
-            device: {
-                browser: `${ua.browser.name || 'Unknown'} ${ua.browser.version || ''}`,
-                os: `${ua.os.name || 'Unknown'} ${ua.os.version || ''}`,
-                device: ua.device.model || 'Desktop'
-            }
-        });
-
-        createSendToken(user, 200, req, res);
+        // createSendToken handles token generation, session creation, and setting cookies
+        await createSendToken(user, 200, req, res);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -212,7 +199,13 @@ exports.protect = async (req, res, next) => {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
         // 3. Check if session still exists and is active in database
-        const session = await Session.findOne({ token, userId: decoded.id });
+        const refreshToken = req.cookies.refreshToken;
+        let session;
+        if (refreshToken) {
+            session = await Session.findOne({ token: refreshToken, userId: decoded.id });
+        } else {
+            session = await Session.findOne({ userId: decoded.id }).sort('-lastActive');
+        }
         
         if (!session) {
             return res.status(401).json({ message: 'Your session has been terminated. Please log in again.' });
@@ -288,18 +281,19 @@ exports.logout = async (req, res) => {
             }
         }
 
+        const isProd = process.env.NODE_ENV === 'production' || req.headers['x-forwarded-for'] === 'https';
         res.cookie('jwt', 'loggedout', {
             expires: new Date(Date.now() + 10 * 1000),
             httpOnly: true,
-            secure: true,
-            sameSite: 'None'
+            secure: isProd,
+            sameSite: isProd ? 'None' : 'Lax'
         });
 
         res.cookie('refreshToken', 'loggedout', {
             expires: new Date(Date.now() + 10 * 1000),
             httpOnly: true,
-            secure: true,
-            sameSite: 'None'
+            secure: isProd,
+            sameSite: isProd ? 'None' : 'Lax'
         });
 
         res.status(200).json({
@@ -359,15 +353,59 @@ exports.googleCallback = async (req, res) => {
         // Strictly check for Admin role
         if (user.role !== 'admin') {
             console.warn(`Unauthorized login attempt by ${user.email}`);
-            return res.redirect(`${process.env.ADMIN_URL || 'http://localhost:5173'}/login?error=unauthorized`);
+            return res.redirect(`${process.env.ADMIN_URL || 'http://localhost:5173'}?error=unauthorized`);
         }
 
-        await createSendToken(user, 200, req, res);
+        // Generate tokens
+        const accessToken = signAccessToken(user._id);
+        const refreshToken = signRefreshToken(user._id);
+
+        const isProd = process.env.NODE_ENV === 'production' || req.headers['x-forwarded-for'] === 'https';
+        const cookieOptions = {
+            httpOnly: true,
+            secure: isProd,
+            sameSite: isProd ? 'None' : 'Lax'
+        };
+
+        // Set Access Token Cookie (15 mins)
+        res.cookie('jwt', accessToken, {
+            ...cookieOptions,
+            expires: new Date(Date.now() + 15 * 60 * 1000)
+        });
+
+        // Set Refresh Token Cookie (7 days)
+        res.cookie('refreshToken', refreshToken, {
+            ...cookieOptions,
+            expires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+        });
+
+        // Track Session in DB using Refresh Token
+        const parser = new UAParser(req.headers['user-agent']);
+        const ua = parser.getResult();
         
-        res.redirect(`${process.env.ADMIN_URL || 'http://localhost:5173'}/dashboard`);
+        await Session.create({
+            userId: user._id,
+            token: refreshToken,
+            ipAddress: req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress,
+            userAgent: req.headers['user-agent'],
+            device: {
+                browser: `${ua.browser.name || 'Unknown'} ${ua.browser.version || ''}`,
+                os: `${ua.os.name || 'Unknown'} ${ua.os.version || ''}`,
+                device: ua.device.model || 'Desktop'
+            }
+        });
+
+        const userData = {
+            id: user._id,
+            username: user.username
+        };
+        const userStr = encodeURIComponent(JSON.stringify(userData));
+
+        // Redirect to admin root with token and user in URL for frontend to catch
+        res.redirect(`${process.env.ADMIN_URL || 'http://localhost:5173'}?token=${accessToken}&user=${userStr}`);
     } catch (error) {
         console.error('Google Auth Callback Error:', error);
-        res.redirect(`${process.env.ADMIN_URL || 'http://localhost:5173'}/login?error=auth_failed`);
+        res.redirect(`${process.env.ADMIN_URL || 'http://localhost:5173'}?error=auth_failed`);
     }
 };
 
