@@ -22,8 +22,7 @@ const articleSchema = new mongoose.Schema({
         required: true
     },
     cloudinaryId: {
-        type: String,
-        required: true
+        type: String
     },
     keywords: [String],
     pages: String,

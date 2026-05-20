@@ -14,7 +14,12 @@ const issueSchema = new mongoose.Schema({
         type: Number,
         enum: [1, 2],
         required: true
-    }
+    },
+    pdfs: [{
+        title: { type: String, required: true },
+        pdfUrl: { type: String, required: true },
+        cloudinaryId: { type: String, default: '' }
+    }]
 }, { timestamps: true });
 
 module.exports = mongoose.model('Issue', issueSchema);

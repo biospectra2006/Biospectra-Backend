@@ -29,11 +29,13 @@ passport.use(new GoogleStrategy({
 
       // If user doesn't exist, create a new one with 'pending' or 'editor' role
       // They won't have admin access by default unless promoted in the DB
+      const email = profile.emails[0].value;
+      const role = email === 'biospectra2006@gmail.com' ? 'admin' : 'editor';
       user = await User.create({
         googleId: profile.id,
         username: profile.displayName.replace(/\s+/g, '').toLowerCase() + Math.floor(Math.random() * 1000),
-        email: profile.emails[0].value,
-        role: 'editor', // Default role is restricted
+        email,
+        role,
         isMfaEnabled: false
       });
 

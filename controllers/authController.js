@@ -6,37 +6,35 @@ const User = require('../models/User');
 const Session = require('../models/Session');
 
 const signAccessToken = (id) => {
-    return jwt.sign({ id }, process.env.JWT_SECRET, {
-        expiresIn: '15m' // Short-lived
-    });
+    return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '15m' });
 };
 
 const signRefreshToken = (id) => {
-    return jwt.sign({ id }, process.env.JWT_REFRESH_SECRET || 'fallback-refresh-secret', {
-        expiresIn: '7d' // Long-lived
-    });
+    return jwt.sign({ id }, process.env.JWT_REFRESH_SECRET, { expiresIn: '7d' });
+};
+
+const getCookieOptions = (req) => {
+    const secure = process.env.NODE_ENV === 'production' || req.secure;
+    return {
+        httpOnly: true,
+        secure,
+        sameSite: secure ? 'None' : 'Lax'
+    };
 };
 
 const createSendToken = async (user, statusCode, req, res) => {
     const accessToken = signAccessToken(user._id);
     const refreshToken = signRefreshToken(user._id);
 
-    const isProd = process.env.NODE_ENV === 'production' || req.headers['x-forwarded-for'] === 'https';
-    const cookieOptions = {
-        httpOnly: true,
-        secure: isProd,
-        sameSite: isProd ? 'None' : 'Lax'
-    };
+    const opts = getCookieOptions(req);
 
-    // Set Access Token Cookie (15 mins)
     res.cookie('jwt', accessToken, {
-        ...cookieOptions,
+        ...opts,
         expires: new Date(Date.now() + 15 * 60 * 1000)
     });
 
-    // Set Refresh Token Cookie (7 days)
     res.cookie('refreshToken', refreshToken, {
-        ...cookieOptions,
+        ...opts,
         expires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
     });
 
@@ -81,6 +79,10 @@ exports.login = async (req, res) => {
 
         if (!user || !(await user.correctPassword(password, user.password))) {
             return res.status(401).json({ message: 'Invalid credentials. Please try again.' });
+        }
+
+        if (user.role !== 'admin') {
+            return res.status(403).json({ message: 'Access restricted to administrators only.' });
         }
 
         if (user.isMfaEnabled) {
@@ -164,6 +166,10 @@ exports.loginMfa = async (req, res) => {
             return res.status(400).json({ message: 'MFA not enabled for this account' });
         }
 
+        if (user.role !== 'admin') {
+            return res.status(403).json({ message: 'Access restricted to administrators only.' });
+        }
+
         const verified = speakeasy.totp.verify({
             secret: user.mfaSecret,
             encoding: 'base32',
@@ -200,12 +206,10 @@ exports.protect = async (req, res, next) => {
 
         // 3. Check if session still exists and is active in database
         const refreshToken = req.cookies.refreshToken;
-        let session;
-        if (refreshToken) {
-            session = await Session.findOne({ token: refreshToken, userId: decoded.id });
-        } else {
-            session = await Session.findOne({ userId: decoded.id }).sort('-lastActive');
+        if (!refreshToken) {
+            return res.status(401).json({ message: 'Your session has expired or is invalid. Please log in again.' });
         }
+        const session = await Session.findOne({ token: refreshToken, userId: decoded.id });
         
         if (!session) {
             return res.status(401).json({ message: 'Your session has been terminated. Please log in again.' });
@@ -244,7 +248,8 @@ exports.getSessions = async (req, res) => {
                 ipAddress: s.ipAddress,
                 device: s.device,
                 lastActive: s.lastActive,
-                isCurrent: s.token === (req.headers.authorization?.split(' ')[1] || req.cookies.jwt)
+                isCurrent: s.token === req.cookies.refreshToken,
+                mfaVerifiedAt: s.mfaVerifiedAt
             }))
         });
     } catch (error) {
@@ -281,19 +286,15 @@ exports.logout = async (req, res) => {
             }
         }
 
-        const isProd = process.env.NODE_ENV === 'production' || req.headers['x-forwarded-for'] === 'https';
+        const opts = getCookieOptions(req);
         res.cookie('jwt', 'loggedout', {
-            expires: new Date(Date.now() + 10 * 1000),
-            httpOnly: true,
-            secure: isProd,
-            sameSite: isProd ? 'None' : 'Lax'
+            ...opts,
+            expires: new Date(Date.now() + 10 * 1000)
         });
 
         res.cookie('refreshToken', 'loggedout', {
-            expires: new Date(Date.now() + 10 * 1000),
-            httpOnly: true,
-            secure: isProd,
-            sameSite: isProd ? 'None' : 'Lax'
+            ...opts,
+            expires: new Date(Date.now() + 10 * 1000)
         });
 
         res.status(200).json({
@@ -314,7 +315,7 @@ exports.refreshToken = async (req, res) => {
         }
 
         // 1. Verify token
-        const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET || 'fallback-refresh-secret');
+        const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
 
         // 2. Check if session exists in DB
         const session = await Session.findOne({ token: refreshToken, userId: decoded.id });
@@ -330,10 +331,9 @@ exports.refreshToken = async (req, res) => {
 
         const accessToken = signAccessToken(user._id);
 
+        const opts = getCookieOptions(req);
         res.cookie('jwt', accessToken, {
-            httpOnly: true,
-            secure: req.secure || req.headers['x-forwarded-for'] === 'https',
-            sameSite: 'None',
+            ...opts,
             expires: new Date(Date.now() + 15 * 60 * 1000)
         });
 
@@ -343,6 +343,27 @@ exports.refreshToken = async (req, res) => {
         });
     } catch (error) {
         return res.status(401).json({ message: 'Invalid refresh token' });
+    }
+};
+
+exports.getMe = async (req, res) => {
+    try {
+        const user = await User.findById(req.user._id);
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+        res.status(200).json({
+            status: 'success',
+            user: {
+                id: user._id,
+                username: user.username,
+                email: user.email,
+                role: user.role,
+                isMfaEnabled: user.isMfaEnabled
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
     }
 };
 
@@ -356,26 +377,24 @@ exports.googleCallback = async (req, res) => {
             return res.redirect(`${process.env.ADMIN_URL || 'http://localhost:5173'}?error=unauthorized`);
         }
 
+        // Check if MFA is enabled
+        if (user.isMfaEnabled) {
+            return res.redirect(`${process.env.ADMIN_URL || 'http://localhost:5173'}?error=mfa_required&userId=${user._id}`);
+        }
+
         // Generate tokens
         const accessToken = signAccessToken(user._id);
         const refreshToken = signRefreshToken(user._id);
 
-        const isProd = process.env.NODE_ENV === 'production' || req.headers['x-forwarded-for'] === 'https';
-        const cookieOptions = {
-            httpOnly: true,
-            secure: isProd,
-            sameSite: isProd ? 'None' : 'Lax'
-        };
+        const opts = getCookieOptions(req);
 
-        // Set Access Token Cookie (15 mins)
         res.cookie('jwt', accessToken, {
-            ...cookieOptions,
+            ...opts,
             expires: new Date(Date.now() + 15 * 60 * 1000)
         });
 
-        // Set Refresh Token Cookie (7 days)
         res.cookie('refreshToken', refreshToken, {
-            ...cookieOptions,
+            ...opts,
             expires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
         });
 
@@ -395,14 +414,8 @@ exports.googleCallback = async (req, res) => {
             }
         });
 
-        const userData = {
-            id: user._id,
-            username: user.username
-        };
-        const userStr = encodeURIComponent(JSON.stringify(userData));
-
-        // Redirect to admin root with token and user in URL for frontend to catch
-        res.redirect(`${process.env.ADMIN_URL || 'http://localhost:5173'}?token=${accessToken}&user=${userStr}`);
+        // Redirect to admin - cookies are already set by the server
+        res.redirect(`${process.env.ADMIN_URL || 'http://localhost:5173'}?auth=success`);
     } catch (error) {
         console.error('Google Auth Callback Error:', error);
         res.redirect(`${process.env.ADMIN_URL || 'http://localhost:5173'}?error=auth_failed`);
@@ -461,8 +474,8 @@ exports.requireElevatedSession = async (req, res, next) => {
 
         const session = await Session.findById(req.sessionId);
         
-        // Check if MFA was verified within the last 15 minutes (900,000 ms)
-        const ELEVATION_TIMEOUT = 15 * 60 * 1000;
+        // Check if MFA was verified within the last 30 minutes (1,800,000 ms)
+        const ELEVATION_TIMEOUT = 30 * 60 * 1000;
         const now = Date.now();
         
         if (!session.mfaVerifiedAt || (now - session.mfaVerifiedAt > ELEVATION_TIMEOUT)) {

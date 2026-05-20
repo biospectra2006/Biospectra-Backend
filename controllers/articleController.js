@@ -3,6 +3,25 @@ const Year = require('../models/Year');
 const Issue = require('../models/Issue');
 const Category = require('../models/Category');
 const { cloudinary } = require('../config/cloudinary');
+const fs = require('fs');
+const path = require('path');
+
+const deleteArticleFile = async (article) => {
+    try {
+        if (article.pdfUrl && article.pdfUrl.startsWith('/pdf biospectra/')) {
+            const localPath = path.join(__dirname, '../../frontend/public', article.pdfUrl);
+            if (fs.existsSync(localPath)) {
+                fs.unlinkSync(localPath);
+                console.log('Deleted local article file:', localPath);
+            }
+        } else if (article.cloudinaryId) {
+            await cloudinary.uploader.destroy(article.cloudinaryId);
+            console.log('Deleted Cloudinary file:', article.cloudinaryId);
+        }
+    } catch (err) {
+        console.error('Failed to delete file for article:', article._id, err.message);
+    }
+};
 
 exports.uploadArticle = async (req, res) => {
     try {
@@ -10,6 +29,38 @@ exports.uploadArticle = async (req, res) => {
         
         if (!req.file) {
             return res.status(400).json({ message: 'No file uploaded' });
+        }
+
+        let pdfUrl = '';
+        let cloudinaryId = '';
+
+        try {
+            console.log('Attempting Cloudinary upload for article:', req.file.filename);
+            const result = await cloudinary.uploader.upload(req.file.path, {
+                folder: 'spectra_articles',
+                resource_type: 'raw'
+            });
+            pdfUrl = result.secure_url;
+            cloudinaryId = result.public_id;
+            
+            // Delete temp file asynchronously
+            fs.unlink(req.file.path, (err) => {
+                if (err) console.error('Failed to delete temp file:', err);
+            });
+        } catch (cloudinaryError) {
+            console.warn('Cloudinary upload failed, falling back to local storage:', cloudinaryError.message);
+            
+            // Fallback: move file to permanent local storage
+            const targetDir = path.join(__dirname, '../../frontend/public/pdf biospectra');
+            if (!fs.existsSync(targetDir)) {
+                fs.mkdirSync(targetDir, { recursive: true });
+            }
+            
+            const targetPath = path.join(targetDir, req.file.filename);
+            fs.renameSync(req.file.path, targetPath);
+            
+            pdfUrl = `/pdf biospectra/${req.file.filename}`;
+            cloudinaryId = '';
         }
 
         const newArticle = new Article({
@@ -20,13 +71,16 @@ exports.uploadArticle = async (req, res) => {
             keywords: keywords ? keywords.split(',').map(k => k.trim()) : [],
             pages,
             doi,
-            pdfUrl: req.file.path,
-            cloudinaryId: req.file.filename
+            pdfUrl,
+            cloudinaryId
         });
 
         await newArticle.save();
         res.status(201).json(newArticle);
     } catch (error) {
+        if (req.file && fs.existsSync(req.file.path)) {
+            fs.unlinkSync(req.file.path);
+        }
         res.status(400).json({ message: error.message });
     }
 };
@@ -63,8 +117,8 @@ exports.deleteArticle = async (req, res) => {
         const article = await Article.findById(req.params.id);
         if (!article) return res.status(404).json({ message: 'Article not found' });
 
-        // Delete from Cloudinary
-        await cloudinary.uploader.destroy(article.cloudinaryId);
+        // Delete associated file (local or Cloudinary)
+        await deleteArticleFile(article);
         
         // Delete from DB
         await Article.findByIdAndDelete(req.params.id);
@@ -172,16 +226,11 @@ exports.deleteCategory = async (req, res) => {
     try {
         const { id } = req.params;
         
-        // 1. Find all articles in this category to get their Cloudinary IDs
+        // 1. Find all articles in this category to get their files
         const articles = await Article.find({ category: id });
         
-        // 2. Delete all files from Cloudinary
-        const deletePromises = articles.map(article => {
-            if (article.cloudinaryId) {
-                return cloudinary.uploader.destroy(article.cloudinaryId);
-            }
-            return Promise.resolve();
-        });
+        // 2. Delete all files (local or Cloudinary)
+        const deletePromises = articles.map(article => deleteArticleFile(article));
         await Promise.all(deletePromises);
 
         // 3. Delete all articles in this category from DB
@@ -227,13 +276,8 @@ exports.deleteYear = async (req, res) => {
         // 3. Find all articles for these categories
         const articles = await Article.find({ category: { $in: categoryIds } });
         
-        // 4. Delete all article files from Cloudinary
-        const deletePromises = articles.map(article => {
-            if (article.cloudinaryId) {
-                return cloudinary.uploader.destroy(article.cloudinaryId);
-            }
-            return Promise.resolve();
-        });
+        // 4. Delete all article files (local or Cloudinary)
+        const deletePromises = articles.map(article => deleteArticleFile(article));
         await Promise.all(deletePromises);
 
         // 5. Recursive DB Deletion
@@ -248,3 +292,47 @@ exports.deleteYear = async (req, res) => {
         res.status(500).json({ message: error.message });
     }
 };
+
+exports.deleteIssue = async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        // 1. Find all categories for this issue
+        const categories = await Category.find({ issue: id });
+        const categoryIds = categories.map(c => c._id);
+
+        // 2. Find all articles for these categories
+        const articles = await Article.find({ category: { $in: categoryIds } });
+        
+        // 3. Delete all article files (local or Cloudinary)
+        const deletePromises = articles.map(article => deleteArticleFile(article));
+        await Promise.all(deletePromises);
+
+        // 4. Recursive DB Deletion
+        await Article.deleteMany({ category: { $in: categoryIds } });
+        await Category.deleteMany({ issue: id });
+        await Issue.findByIdAndDelete(id);
+
+        res.json({ message: 'Issue and all associated content deleted successfully' });
+    } catch (error) {
+        console.error('Delete Issue Error:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.updateIssue = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { title } = req.body;
+        if (!title) {
+            return res.status(400).json({ message: 'Title is required' });
+        }
+        const issue = await Issue.findByIdAndUpdate(id, { title }, { new: true });
+        if (!issue) return res.status(404).json({ message: 'Issue not found' });
+        res.json(issue);
+    } catch (error) {
+        console.error('Update Issue Error:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
