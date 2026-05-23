@@ -1,3 +1,11 @@
+/**
+ * upload_editorial.js
+ * Seeds the Editorial board data into MongoDB via the backend API.
+ * Contains the full list of editorial members (core, national_advisory,
+ * national_editor, foreign_editor, strategic).
+ * Run: node scripts/upload_editorial.js   (requires backend running)
+ */
+
 const data = [
     // Executive Leadership (core)
     { name: 'Prof. Jyoti Kumar', role: 'Editor-in-Chief', email: 'jyotikumar1ru@gmail.com', memberType: 'core', order: 1 },

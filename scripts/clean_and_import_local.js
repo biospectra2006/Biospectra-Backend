@@ -1,3 +1,11 @@
+/**
+ * clean_and_import_local.js
+ * Scans local assets/Pdf Biospectra folder, compresses PDFs, uploads to Cloudinary,
+ * creates Year → Issue → Category → Article records in MongoDB.
+ * Handles folder names like "23 March" → year 2023, issue order 1.
+ * Run: node scripts/clean_and_import_local.js
+ */
+
 require('dotenv').config({ path: __dirname + '/../.env' });
 const mongoose = require('mongoose');
 const { cloudinary } = require('../config/cloudinary');

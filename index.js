@@ -20,7 +20,21 @@ app.use(morgan('dev'));
 app.use(compression());
 
 // 3. Security Headers
-app.use(helmet());
+app.use(helmet({
+    contentSecurityPolicy: {
+        directives: {
+            defaultSrc: ["'self'"],
+            scriptSrc: ["'self'", "'unsafe-inline'"],
+            styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+            fontSrc: ["'self'", "https://fonts.gstatic.com"],
+            imgSrc: ["'self'", "https://res.cloudinary.com", "data:", "blob:"],
+            connectSrc: ["'self'", "https://res.cloudinary.com", "https://api.cloudinary.com"],
+            frameSrc: ["'self'"],
+            objectSrc: ["'none'"],
+            upgradeInsecureRequests: []
+        }
+    }
+}));
 app.use(cookieParser());
 
 // 4. Trust proxy

@@ -1,3 +1,11 @@
+/**
+ * batch_import_all.js
+ * Bulk import PDFs from local folder (C:/Users/Asus/Downloads/bb/Pdf Biospectra) into MongoDB + Cloudinary.
+ * Reads year/month folders → category subfolders → PDFs, extracts title/authors/abstract via pdf-parse,
+ * uploads to Cloudinary, and creates Year → Issue → Category → Article hierarchy in DB.
+ * Run: node scripts/batch_import_all.js
+ */
+
 const fs = require('fs');
 const path = require('path');
 const mongoose = require('mongoose');

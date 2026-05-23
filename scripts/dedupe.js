@@ -1,3 +1,9 @@
+/**
+ * dedupe.js
+ * Finds and deletes exact duplicate Article records (matched by title + year + category + pdfUrl).
+ * Run: node scripts/dedupe.js
+ */
+
 require('dotenv').config({ path: __dirname + '/../.env' });
 const mongoose = require('mongoose');
 const Article = require('../models/Article');

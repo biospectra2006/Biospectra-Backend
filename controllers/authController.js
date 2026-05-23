@@ -1,9 +1,12 @@
+const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const speakeasy = require('speakeasy');
 const qrcode = require('qrcode');
 const UAParser = require('ua-parser-js');
 const User = require('../models/User');
 const Session = require('../models/Session');
+
+const hashToken = (token) => crypto.createHash('sha256').update(token).digest('hex');
 
 const signAccessToken = (id) => {
     return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '15m' });
@@ -38,13 +41,13 @@ const createSendToken = async (user, statusCode, req, res) => {
         expires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
     });
 
-    // Track Session in DB using Refresh Token
+    // Track Session in DB using hashed Refresh Token
     const parser = new UAParser(req.headers['user-agent']);
     const ua = parser.getResult();
     
     await Session.create({
         userId: user._id,
-        token: refreshToken, // Use refresh token for tracking
+        tokenHash: hashToken(refreshToken),
         ipAddress: req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress,
         userAgent: req.headers['user-agent'],
         device: {
@@ -205,11 +208,11 @@ exports.protect = async (req, res, next) => {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
         // 3. Check if session still exists and is active in database
-        const refreshToken = req.cookies.refreshToken;
-        if (!refreshToken) {
+        const rawRefreshToken = req.cookies.refreshToken;
+        if (!rawRefreshToken) {
             return res.status(401).json({ message: 'Your session has expired or is invalid. Please log in again.' });
         }
-        const session = await Session.findOne({ token: refreshToken, userId: decoded.id });
+        const session = await Session.findOne({ tokenHash: hashToken(rawRefreshToken), userId: decoded.id });
         
         if (!session) {
             return res.status(401).json({ message: 'Your session has been terminated. Please log in again.' });
@@ -248,7 +251,7 @@ exports.getSessions = async (req, res) => {
                 ipAddress: s.ipAddress,
                 device: s.device,
                 lastActive: s.lastActive,
-                isCurrent: s.token === req.cookies.refreshToken,
+                isCurrent: req.cookies.refreshToken ? s.tokenHash === hashToken(req.cookies.refreshToken) : false,
                 mfaVerifiedAt: s.mfaVerifiedAt
             }))
         });
@@ -280,9 +283,9 @@ exports.logout = async (req, res) => {
             await Session.findByIdAndDelete(req.sessionId);
         } else {
             // Fallback for non-protected logout if token provided
-            const token = req.headers.authorization?.split(' ')[1];
-            if (token) {
-                await Session.findOneAndDelete({ token });
+            const rawToken = req.cookies.refreshToken;
+            if (rawToken) {
+                await Session.findOneAndDelete({ tokenHash: hashToken(rawToken) });
             }
         }
 
@@ -308,17 +311,17 @@ exports.logout = async (req, res) => {
 
 exports.refreshToken = async (req, res) => {
     try {
-        const { refreshToken } = req.cookies;
+        const rawRefreshToken = req.cookies.refreshToken;
 
-        if (!refreshToken) {
+        if (!rawRefreshToken) {
             return res.status(401).json({ message: 'No refresh token provided' });
         }
 
         // 1. Verify token
-        const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+        const decoded = jwt.verify(rawRefreshToken, process.env.JWT_REFRESH_SECRET);
 
-        // 2. Check if session exists in DB
-        const session = await Session.findOne({ token: refreshToken, userId: decoded.id });
+        // 2. Check if session exists in DB using hash
+        const session = await Session.findOne({ tokenHash: hashToken(rawRefreshToken), userId: decoded.id });
         if (!session) {
             return res.status(401).json({ message: 'Session expired or revoked' });
         }
@@ -398,13 +401,13 @@ exports.googleCallback = async (req, res) => {
             expires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
         });
 
-        // Track Session in DB using Refresh Token
+        // Track Session in DB using hashed Refresh Token
         const parser = new UAParser(req.headers['user-agent']);
         const ua = parser.getResult();
         
         await Session.create({
             userId: user._id,
-            token: refreshToken,
+            tokenHash: hashToken(refreshToken),
             ipAddress: req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress,
             userAgent: req.headers['user-agent'],
             device: {

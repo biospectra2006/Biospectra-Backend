@@ -1,3 +1,11 @@
+/**
+ * polish_metadata.js
+ * Fixes articles with placeholder titles ("Research Article") or generic authors
+ * ("Biospectra Contributor") by re-parsing the original local PDF to extract
+ * correct title, authors, and abstract.
+ * Run: node scripts/polish_metadata.js
+ */
+
 const mongoose = require('mongoose');
 const path = require('path');
 const pdfParse = require('pdf-parse');

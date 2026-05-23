@@ -44,6 +44,12 @@ exports.deleteMember = async (req, res) => {
 // Bulk create (for initial migration)
 exports.bulkCreate = async (req, res) => {
     try {
+        if (!Array.isArray(req.body)) {
+            return res.status(400).json({ message: 'Request body must be an array' });
+        }
+        if (req.body.length > 50) {
+            return res.status(400).json({ message: 'Maximum 50 items allowed per bulk request' });
+        }
         const members = await Editorial.insertMany(req.body);
         res.status(201).json(members);
     } catch (err) {

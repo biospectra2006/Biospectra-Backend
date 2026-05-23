@@ -1,3 +1,11 @@
+/**
+ * master_compress_and_unify.js
+ * Master compression workflow: reads Issue records with local PDF file paths,
+ * compresses them via Ghostscript, uploads to Cloudinary, and updates DB.
+ * Handles both merged issue PDFs and individual article PDFs.
+ * Run: node scripts/master_compress_and_unify.js
+ */
+
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');

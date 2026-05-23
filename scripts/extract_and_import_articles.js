@@ -1,3 +1,12 @@
+/**
+ * extract_and_import_articles.js
+ * Full pipeline: downloads merged issue PDFs from Cloudinary → splits by article
+ * using Ghostscript → extracts title/authors/abstract/keywords via pdf-parse →
+ * uploads individual article PDFs to Cloudinary → saves to MongoDB.
+ * Supports --dry-run flag and issue name filtering.
+ * Run: node scripts/extract_and_import_articles.js [--dry-run] [issue-name]
+ */
+
 require('dotenv').config({ path: __dirname + '/../.env' });
 const mongoose = require('mongoose');
 const { cloudinary } = require('../config/cloudinary');

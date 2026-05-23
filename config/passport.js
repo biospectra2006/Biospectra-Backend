@@ -27,19 +27,8 @@ passport.use(new GoogleStrategy({
         return done(null, user);
       }
 
-      // If user doesn't exist, create a new one with 'pending' or 'editor' role
-      // They won't have admin access by default unless promoted in the DB
-      const email = profile.emails[0].value;
-      const role = email === 'biospectra2006@gmail.com' ? 'admin' : 'editor';
-      user = await User.create({
-        googleId: profile.id,
-        username: profile.displayName.replace(/\s+/g, '').toLowerCase() + Math.floor(Math.random() * 1000),
-        email,
-        role,
-        isMfaEnabled: false
-      });
-
-      return done(null, user);
+      // Reject unknown users — only pre-existing DB accounts can log in
+      return done(null, false, { message: 'Account not authorized. Contact an administrator.' });
     } catch (err) {
       console.error(err);
       return done(err, null);

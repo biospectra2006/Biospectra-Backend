@@ -1,3 +1,10 @@
+/**
+ * check_editorial.js
+ * Quick sanity check: fetches editorial board data from running backend API at localhost:5000
+ * and prints counts per member type.
+ * Run: node scripts/check_editorial.js   (requires backend running)
+ */
+
 async function check() {
     try {
         const response = await fetch('http://localhost:5000/api/editorial');

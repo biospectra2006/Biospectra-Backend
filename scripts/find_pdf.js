@@ -1,3 +1,10 @@
+/**
+ * find_pdf.js
+ * Scans local /pdf biospectra/ folder for PDFs and prints page count for each.
+ * Useful for locating which file corresponds to a given page range.
+ * Run: node scripts/find_pdf.js
+ */
+
 const fs = require('fs');
 const path = require('path');
 const pdfParse = require('pdf-parse');

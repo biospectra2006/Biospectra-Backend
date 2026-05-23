@@ -3,6 +3,7 @@ const Year = require('../models/Year');
 const Issue = require('../models/Issue');
 const Category = require('../models/Category');
 const { cloudinary } = require('../config/cloudinary');
+const { validateFileContent, PDF_MAGIC } = require('../config/multerTemp');
 const fs = require('fs');
 const path = require('path');
 
@@ -29,6 +30,12 @@ exports.uploadArticle = async (req, res) => {
         
         if (!req.file) {
             return res.status(400).json({ message: 'No file uploaded' });
+        }
+
+        // Validate PDF magic bytes
+        if (!validateFileContent(req.file.path, [{ magic: PDF_MAGIC }])) {
+            fs.unlinkSync(req.file.path);
+            return res.status(400).json({ message: 'File is not a valid PDF' });
         }
 
         let pdfUrl = '';

@@ -19,28 +19,52 @@ const storage = multer.diskStorage({
     }
 });
 
+const checkMagicBytes = (filePath, magic) => {
+    try {
+        const fd = fs.openSync(filePath, 'r');
+        const buf = Buffer.alloc(magic.length);
+        fs.readSync(fd, buf, 0, magic.length, 0);
+        fs.closeSync(fd);
+        return buf.equals(magic);
+    } catch {
+        return false;
+    }
+};
+
+const PDF_MAGIC = Buffer.from([0x25, 0x50, 0x44, 0x46]); // %PDF
+const JPEG_MAGIC = Buffer.from([0xFF, 0xD8, 0xFF]);
+
+const validateFileContent = (filePath, allowedTypes) => {
+    for (const t of allowedTypes) {
+        if (checkMagicBytes(filePath, t.magic)) return true;
+    }
+    return false;
+};
+
+const articleFilter = (req, file, cb) => {
+    if (file.mimetype !== 'application/pdf') {
+        return cb(new Error('Only PDF files are allowed for article uploads'), false);
+    }
+    cb(null, true);
+};
+
+const galleryFilter = (req, file, cb) => {
+    if (!file.mimetype.startsWith('image/')) {
+        return cb(new Error('Only image files are allowed for gallery uploads'), false);
+    }
+    cb(null, true);
+};
+
 const articleUpload = multer({
     storage: storage,
-    limits: { fileSize: 50 * 1024 * 1024 }, // 50MB max
-    fileFilter: (req, file, cb) => {
-        if (file.mimetype === 'application/pdf') {
-            cb(null, true);
-        } else {
-            cb(new Error('Only PDF files are allowed for article uploads'), false);
-        }
-    }
+    limits: { fileSize: 50 * 1024 * 1024 },
+    fileFilter: articleFilter
 });
 
 const galleryUpload = multer({
     storage: storage,
-    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB max
-    fileFilter: (req, file, cb) => {
-        if (file.mimetype.startsWith('image/')) {
-            cb(null, true);
-        } else {
-            cb(new Error('Only image files are allowed for gallery uploads'), false);
-        }
-    }
+    limits: { fileSize: 10 * 1024 * 1024 },
+    fileFilter: galleryFilter
 });
 
-module.exports = { articleUpload, galleryUpload };
+module.exports = { articleUpload, galleryUpload, validateFileContent, PDF_MAGIC, JPEG_MAGIC };

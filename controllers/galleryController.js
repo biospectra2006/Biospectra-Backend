@@ -1,5 +1,6 @@
 const Gallery = require('../models/Gallery');
 const { cloudinary } = require('../config/cloudinary');
+const { validateFileContent, JPEG_MAGIC } = require('../config/multerTemp');
 const fs = require('fs');
 const path = require('path');
 
@@ -20,6 +21,12 @@ exports.uploadGalleryImage = async (req, res) => {
 
         if (!req.file) {
             return res.status(400).json({ message: 'No image file uploaded' });
+        }
+
+        // Validate image magic bytes (JPEG or PNG)
+        if (!validateFileContent(req.file.path, [{ magic: JPEG_MAGIC }, { magic: Buffer.from([0x89, 0x50, 0x4E, 0x47]) }])) {
+            fs.unlinkSync(req.file.path);
+            return res.status(400).json({ message: 'File is not a valid image (JPEG/PNG)' });
         }
 
         let imageUrl = '';

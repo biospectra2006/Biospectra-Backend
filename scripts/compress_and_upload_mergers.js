@@ -1,3 +1,11 @@
+/**
+ * compress_and_upload_mergers.js
+ * Compresses merged issue PDFs (from frontend/public/assets/2nd-merger-pdf/)
+ * via Ghostscript and uploads them to Cloudinary. Creates/updates Issue records
+ * in MongoDB with the Cloudinary URLs.
+ * Run: node scripts/compress_and_upload_mergers.js
+ */
+
 require('dotenv').config({ path: __dirname + '/../.env' });
 const mongoose = require('mongoose');
 const { cloudinary } = require('../config/cloudinary');

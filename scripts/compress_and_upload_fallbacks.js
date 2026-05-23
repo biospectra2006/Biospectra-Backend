@@ -1,3 +1,11 @@
+/**
+ * compress_and_upload_fallbacks.js
+ * Finds articles with local file URLs (pdfUrl starting with /pdf biospectra/),
+ * compresses those PDFs via Ghostscript (gswin64c), uploads to Cloudinary,
+ * updates the DB records, and deletes local originals.
+ * Run: node scripts/compress_and_upload_fallbacks.js
+ */
+
 require('dotenv').config({ path: __dirname + '/../.env' });
 const mongoose = require('mongoose');
 const { cloudinary } = require('../config/cloudinary');

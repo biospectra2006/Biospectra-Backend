@@ -1,3 +1,10 @@
+/**
+ * count_articles.js
+ * Connects to MongoDB and prints article count per year/issue/category.
+ * Useful for verifying data integrity after imports.
+ * Run: node scripts/count_articles.js
+ */
+
 require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
 const mongoose = require('mongoose');
 const Year = require('../models/Year');

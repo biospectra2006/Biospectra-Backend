@@ -6,9 +6,10 @@ const sessionSchema = new mongoose.Schema({
         ref: 'User',
         required: true
     },
-    token: {
+    tokenHash: {
         type: String,
-        required: true
+        required: true,
+        index: true
     },
     ipAddress: String,
     userAgent: String,
@@ -26,7 +27,7 @@ const sessionSchema = new mongoose.Schema({
     }
 }, { timestamps: true });
 
-// Index for automatic expiration if needed (optional)
-// sessionSchema.index({ lastActive: 1 }, { expireAfterSeconds: 2592000 }); // 30 days
+// Auto-expire sessions inactive for 30 days
+sessionSchema.index({ lastActive: 1 }, { expireAfterSeconds: 2592000 }); // 30 days
 
 module.exports = mongoose.model('Session', sessionSchema);
