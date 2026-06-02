@@ -26,6 +26,9 @@ temp_*
 # Scratch scripts
 scratch/
 
+# Scripts directory
+scripts/
+
 # OS metadata
 .DS_Store
 Thumbs.db
