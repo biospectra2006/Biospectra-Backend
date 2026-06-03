@@ -477,8 +477,8 @@ exports.requireElevatedSession = async (req, res, next) => {
 
         const session = await Session.findById(req.sessionId);
         
-        // Check if MFA was verified within the last 30 minutes (1,800,000 ms)
-        const ELEVATION_TIMEOUT = 30 * 60 * 1000;
+        // Check if MFA was verified within the last 1 hour (3,600,000 ms)
+        const ELEVATION_TIMEOUT = 60 * 60 * 1000;
         const now = Date.now();
         
         if (!session.mfaVerifiedAt || (now - session.mfaVerifiedAt > ELEVATION_TIMEOUT)) {

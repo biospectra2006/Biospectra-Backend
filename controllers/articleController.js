@@ -4,6 +4,7 @@ const Issue = require('../models/Issue');
 const Category = require('../models/Category');
 const { cloudinary } = require('../config/cloudinary');
 const { validateFileContent, PDF_MAGIC } = require('../config/multerTemp');
+const { PDFDocument } = require('pdf-lib');
 const fs = require('fs');
 const path = require('path');
 
@@ -26,7 +27,7 @@ const deleteArticleFile = async (article) => {
 
 exports.uploadArticle = async (req, res) => {
     try {
-        const { categoryId, title, authors, abstract, keywords, pages, doi } = req.body;
+        const { categoryId, title, authors, affiliation, abstract, keywords, pages, doi } = req.body;
         
         if (!req.file) {
             return res.status(400).json({ message: 'No file uploaded' });
@@ -37,6 +38,50 @@ exports.uploadArticle = async (req, res) => {
             fs.unlinkSync(req.file.path);
             return res.status(400).json({ message: 'File is not a valid PDF' });
         }
+
+        let finalPages = pages;
+        if (!finalPages && req.file) {
+            try {
+                // First try to extract from filename (e.g. "57-66.pdf" or "Article 57-66.pdf")
+                const originalName = req.file.originalname || '';
+                const pageMatch = originalName.match(/(\d+)\s*-\s*(\d+)/);
+                
+                if (pageMatch) {
+                    finalPages = `${pageMatch[1]}-${pageMatch[2]}`;
+                } else {
+                    const pdfBytes = fs.readFileSync(req.file.path);
+                    const pdfDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
+                    const numPages = pdfDoc.getPageCount();
+                
+                const category = await Category.findById(categoryId);
+                if (category) {
+                    const allCategoriesInIssue = await Category.find({ issue: category.issue });
+                    const categoryIds = allCategoriesInIssue.map(c => c._id);
+                    const existingArticles = await Article.find({ category: { $in: categoryIds } });
+                    
+                    let maxEndPage = 0;
+                    existingArticles.forEach(art => {
+                        if (art.pages) {
+                            const parts = art.pages.split('-');
+                            const endPageStr = parts[parts.length - 1];
+                            const endPage = parseInt(endPageStr.trim());
+                            if (!isNaN(endPage) && endPage > maxEndPage) {
+                                maxEndPage = endPage;
+                            }
+                        }
+                    });
+                    
+                    
+                    const startPage = maxEndPage + 1;
+                    const endPage = startPage + numPages - 1;
+                    finalPages = startPage === endPage ? `${startPage}` : `${startPage}-${endPage}`;
+                }
+                } // Close else block
+            } catch (err) {
+                console.error("Failed to auto-generate pages:", err.message);
+            }
+        }
+
 
         let pdfUrl = '';
         let cloudinaryId = '';
@@ -74,9 +119,10 @@ exports.uploadArticle = async (req, res) => {
             category: categoryId,
             title,
             authors,
+            affiliation,
             abstract,
             keywords: keywords ? keywords.split(',').map(k => k.trim()) : [],
-            pages,
+            pages: finalPages,
             doi,
             pdfUrl,
             cloudinaryId
@@ -167,7 +213,18 @@ exports.getJournalTree = async (req, res) => {
             const populatedIssues = await Promise.all(issues.map(async (issue) => {
                 const categories = await Category.find({ issue: issue._id }).sort({ createdAt: 1 });
                 const populatedCategories = await Promise.all(categories.map(async (cat) => {
-                    const articles = await Article.find({ category: cat._id }).sort({ createdAt: -1 });
+                    const articles = await Article.find({ category: cat._id });
+                    
+                    // Sort articles by page number numerically
+                    articles.sort((a, b) => {
+                        const getStartPage = (pagesStr) => {
+                            if (!pagesStr) return 999999;
+                            const match = pagesStr.match(/^(\d+)/);
+                            return match ? parseInt(match[1], 10) : 999999;
+                        };
+                        return getStartPage(a.pages) - getStartPage(b.pages);
+                    });
+                    
                     return { ...cat.toObject(), articles };
                 }));
                 return { ...issue.toObject(), categories: populatedCategories };
@@ -203,10 +260,11 @@ exports.initYear = async (req, res) => {
 
 exports.updateArticle = async (req, res) => {
     try {
-        const { title, authors, abstract, keywords, pages, doi, categoryId } = req.body;
+        const { title, authors, affiliation, abstract, keywords, pages, doi, categoryId } = req.body;
         const updateData = {
             title,
             authors,
+            affiliation,
             abstract,
             pages,
             doi
@@ -250,6 +308,22 @@ exports.deleteCategory = async (req, res) => {
     } catch (error) {
         console.error('Delete Category Error:', error);
         res.status(500).json({ message: error.message });
+    }
+};
+
+exports.createIssue = async (req, res) => {
+    try {
+        const { yearId, title } = req.body;
+        if (!yearId || !title) {
+            return res.status(400).json({ message: 'Year ID and Title are required' });
+        }
+        const existingIssues = await Issue.find({ year: yearId });
+        const maxOrder = existingIssues.reduce((max, issue) => Math.max(max, issue.order), 0);
+        const issue = new Issue({ year: yearId, title, order: maxOrder + 1 });
+        await issue.save();
+        res.status(201).json(issue);
+    } catch (error) {
+        res.status(400).json({ message: error.message });
     }
 };
 

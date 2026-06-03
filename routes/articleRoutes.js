@@ -13,6 +13,7 @@ router.get('/:id', articleController.getArticleById);
 // Protected routes (admin only + MFA Elevation)
 router.post('/upload', protect, requireElevatedSession, articleUpload.single('file'), articleController.uploadArticle);
 router.post('/init-year', protect, requireElevatedSession, articleController.initYear);
+router.post('/issue', protect, requireElevatedSession, articleController.createIssue);
 router.post('/category', protect, requireElevatedSession, articleController.createCategory);
 router.put('/:id', protect, requireElevatedSession, articleController.updateArticle);
 router.put('/issue/:id', protect, requireElevatedSession, articleController.updateIssue);

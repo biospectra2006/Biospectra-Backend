@@ -12,7 +12,6 @@ const issueSchema = new mongoose.Schema({
     },
     order: {
         type: Number,
-        enum: [1, 2],
         required: true
     },
     pdfs: [{
