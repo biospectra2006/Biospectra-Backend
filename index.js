@@ -10,6 +10,7 @@ const mongoSanitize = require('mongo-sanitize');
 const compression = require('compression');
 const morgan = require('morgan');
 const authController = require('./controllers/authController');
+const passport = require('./config/passport');
 
 const app = express();
 
@@ -36,6 +37,7 @@ app.use(helmet({
     }
 }));
 app.use(cookieParser());
+app.use(passport.initialize());
 
 // 4. Trust proxy
 app.set('trust proxy', 1);
