@@ -11,6 +11,7 @@ router.get('/category/:categoryId', articleController.getArticlesByCategory);
 router.get('/:id', articleController.getArticleById);
 
 // Protected routes (admin only + MFA Elevation)
+router.post('/extract-pdf', protect, requireElevatedSession, articleUpload.single('file'), articleController.extractPdfMetadata);
 router.post('/upload', protect, requireElevatedSession, articleUpload.single('file'), articleController.uploadArticle);
 router.post('/init-year', protect, requireElevatedSession, articleController.initYear);
 router.post('/issue', protect, requireElevatedSession, articleController.createIssue);

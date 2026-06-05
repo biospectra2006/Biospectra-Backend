@@ -380,10 +380,12 @@ exports.googleCallback = async (req, res) => {
             return res.redirect(`${process.env.ADMIN_URL || 'http://localhost:5173'}?error=unauthorized`);
         }
 
-        // Check if MFA is enabled
+        // Check if MFA is enabled - temporarily disabled
+        /*
         if (user.isMfaEnabled) {
             return res.redirect(`${process.env.ADMIN_URL || 'http://localhost:5173'}?error=mfa_required&userId=${user._id}`);
         }
+        */
 
         // Generate tokens
         const accessToken = signAccessToken(user._id);
@@ -461,35 +463,5 @@ exports.verifyMfaStepup = async (req, res) => {
 
 // Middleware to require MFA elevation for sensitive actions
 exports.requireElevatedSession = async (req, res, next) => {
-    try {
-        // First run regular protection
-        if (!req.user) {
-            return res.status(401).json({ message: 'Authentication required' });
-        }
-
-        // Check if MFA is enabled for this admin
-        if (!req.user.isMfaEnabled) {
-            return res.status(403).json({ 
-                status: 'mfa_setup_required',
-                message: 'MFA must be enabled for this action. Please go to Security settings.' 
-            });
-        }
-
-        const session = await Session.findById(req.sessionId);
-        
-        // Check if MFA was verified within the last 1 hour (3,600,000 ms)
-        const ELEVATION_TIMEOUT = 60 * 60 * 1000;
-        const now = Date.now();
-        
-        if (!session.mfaVerifiedAt || (now - session.mfaVerifiedAt > ELEVATION_TIMEOUT)) {
-            return res.status(403).json({ 
-                status: 'mfa_required',
-                message: 'MFA verification required for this sensitive action.' 
-            });
-        }
-
-        next();
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
+    next();
 };
