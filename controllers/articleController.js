@@ -464,7 +464,10 @@ exports.extractPdfMetadata = async (req, res) => {
         }
 
         // Keywords
-        const kwMatch = flat.match(/Key\s*words?\s*[:.–]\s*([\s\S]+?)(?:\n[A-Z]|INTRODUCTION|Received\s*:|$)/i);
+        let kwMatch = flat.match(/Key\s*words?\s*[:.–]\s*([\s\S]{1,400}?)(?=\n\s*(?:INTRODUCTION|1\.?\s*INTRODUCTION|BACKGROUND)\b|\n\s*\n)/i);
+        if (!kwMatch) {
+            kwMatch = flat.match(/Key\s*words?\s*[:.–]\s*([\s\S]+?)(?=\n[A-Z][a-z]{3,}|\n\d+\.\s+[A-Z]|INTRODUCTION|Received\s*:|$)/i);
+        }
         if (kwMatch) {
             const kwArray = kwMatch[1]
                 .replace(/\s+/g, ' ').replace(/\.\s*$/, '')
