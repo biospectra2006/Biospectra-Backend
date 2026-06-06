@@ -440,9 +440,245 @@ exports.extractPdfMetadata = async (req, res) => {
             if (err) console.error('Failed to delete temp file:', err);
         });
 
-        
-        const result = parseMetadataFromText(parsed.text);
-        
+        // ─── METADATA EXTRACTION LOGIC ───
+        const lines = parsed.text.split('\n').map(l => l.replace(/[\s\xa0\u00a0]+/g, ' ').trim()).filter(l => l.length > 0);
+        const snippet = parsed.text.substring(0, 6000);
+        const flat    = snippet.replace(/[ \t]+/g, ' ').replace(/\r/g, '');
+
+        const result = { title: '', authors: '', abstract: '', keywords: '', doi: '', pages: '' };
+
+        // Pages from header "pp. 1-4"
+        const pagesMatch = flat.match(/pp\.\s*(\d+\s*[-–]\s*\d+)/i);
+        if (pagesMatch) result.pages = pagesMatch[1].replace(/\s/g, '').replace('–', '-');
+
+        // DOI
+        const doiMatch = flat.match(/DOI\s*[:\-]?\s*-?\s*(10\.\d{4,}\/\S+)/i);
+        if (doiMatch) result.doi = doiMatch[1].replace(/[.,]$/, '');
+
+        // Abstract
+        const absMatch = flat.match(/Abstract\s*[-–:]\s*([\s\S]+?)(?=\nKeywords?[\s:.–]|\nKey\s*words?[\s:.–])/i);
+        if (absMatch) result.abstract = absMatch[1].replace(/\s+/g, ' ').trim();
+        if (!result.abstract) {
+            const m2 = flat.match(/Abstract[^a-z]{0,5}([\s\S]+?)Keywords?\s*[:.–]/i);
+            if (m2) result.abstract = m2[1].replace(/\s+/g, ' ').trim();
+        }
+
+        // Keywords
+        let kwMatch = flat.match(/Key\s*words?\s*[:.–]\s*([\s\S]{1,400}?)(?=\n\s*(?:INTRODUCTION|1\.?\s*INTRODUCTION|BACKGROUND)\b|\n\s*\n)/i);
+        if (!kwMatch) {
+            kwMatch = flat.match(/Key\s*words?\s*[:.–]\s*([\s\S]+?)(?=\n[A-Z][a-z]{3,}|\n\d+\.\s+[A-Z]|INTRODUCTION|Received\s*:|$)/i);
+        }
+        if (kwMatch) {
+            const kwArray = kwMatch[1]
+                .replace(/\s+/g, ' ').replace(/\.\s*$/, '')
+                .split(/[,;]/).map(k => k.trim()).filter(Boolean);
+            result.keywords = kwArray.join(', ');
+        }
+
+        // ── AUTHORS & AFFILIATION (Scan backward from Received line) ──
+        const receivedIdx = lines.slice(0, 100).findIndex(l => {
+            const lower = l.toLowerCase();
+            return lower.includes('received') || lower.includes('revised') || lower.includes('accepted');
+        });
+
+        let authors = '';
+        let affiliation = '';
+
+        if (receivedIdx !== -1) {
+            const affKeywords = [
+                'department', 'dept', 'university', 'laboratory', 'lab', 'college',
+                'institute', 'school', 'research', 'centre', 'center', 'trust', 'academy',
+                'india', 'bihar', 'jharkhand', 'patna', 'ranchi', 'jaipur', 'rajasthan',
+                'road', 'hazaribagh', 'muzaffarpur', 'bhagalpur', 'lucknow', 'delhi',
+                'mumbai', 'kolkata', 'chennai', 'hyderabad', 'pune', 'bengaluru'
+            ];
+
+            let affLines = [];
+            let authorLines = [];
+            let stage = 'affiliation';
+
+            for (let i = receivedIdx - 1; i >= 0; i--) {
+                const line = lines[i];
+                const lower = line.toLowerCase();
+
+                // Skip journal headers, page numbers
+                if (/^\d+$/.test(line) || lower.includes('biospectra') || lower.includes('issn') || lower.includes('vol.') || lower.includes('science') && lower.length < 25) continue;
+
+                // Stop at abstract or keywords
+                if (lower.startsWith('abstract') || lower.startsWith('key word') || lower.startsWith('keywords') || lower.startsWith('introduction')) break;
+                if (lower.includes('corresponding author') || lower.includes('correspondent author') || lower.includes('phone:') || lower.includes('e-mail:') || lower.includes('@')) break;
+
+                // Stop if line has no uppercase letters and isn't very short (skip noise)
+                if (line.length > 4 && !/[A-Z]/.test(line)) break;
+
+                if (stage === 'affiliation') {
+                    const isAff = affKeywords.some(w => lower.includes(w));
+                    if (isAff || line.length <= 3) {
+                        affLines.unshift(line);
+                    } else {
+                        stage = 'authors';
+                    }
+                }
+
+                if (stage === 'authors') {
+                    if (authorLines.length >= 8) break;
+                    authorLines.unshift(line);
+                }
+            }
+
+            // If trailing author superscripts (e.g. 'c' for Sahay^c) got pushed into the top of affLines
+            // because they are short lines, shift them back to authorLines.
+            // Rule: If there are multiple short lines at the top of affLines, all but the last one 
+            // belong to the authors block.
+            while (affLines.length >= 2 && affLines[0].length <= 3 && affLines[1].length <= 3) {
+                authorLines.push(affLines.shift());
+            }
+
+            if (authorLines.length > 0) {
+                // Step 1: Join raw lines
+                let rawAuthors = authorLines.join(' ');
+                
+                // Step 2: Convert superscript patterns to ^notation BEFORE stripping
+                // Pattern: "Name {a,b}" where space separates name from letters
+                //   e.g. "Jha a," or "Jha a b," — space then single/double letter superscripts before comma/&
+                rawAuthors = rawAuthors
+                    .replace(/([A-Z][a-z]+)\s+([a-z]{1,2})(?=[,\s&*†‡§]|$)/g, (match, name, sup) => {
+                        return `${name}^${sup}`;
+                    })
+                    // Unicode superscripts → ^a ^b ^1 etc.
+                    .replace(/[\u1D43\u1D47\u1D9C\u1D48\u1D49\u1DA0\u1D4D\u02B0\u2071\u02B2\u1D4F\u02E1\u1D50\u207F\u1D52\u1D56\u02B3\u02E2\u1D57\u1D58\u1D5B\u02B7\u02E3\u02B8\u1DBB]/g, s => {
+                        const keys = '\u1D43\u1D47\u1D9C\u1D48\u1D49\u1DA0\u1D4D\u02B0\u2071\u02B2\u1D4F\u02E1\u1D50\u207F\u1D52\u1D56\u02B3\u02E2\u1D57\u1D58\u1D5B\u02B7\u02E3\u02B8\u1DBB';
+                        const vals = 'abcdefghijklmnoprstuvwxyz';
+                        const idx = keys.indexOf(s);
+                        return `^${idx >= 0 ? vals[idx] : s}`;
+                    })
+                    .replace(/[\u00B9\u00B2\u00B3\u2074\u2075\u2076\u2077\u2078\u2079\u2070]/g, s => {
+                        const keys = '\u00B9\u00B2\u00B3\u2074\u2075\u2076\u2077\u2078\u2079\u2070';
+                        const vals = '1234567890';
+                        const idx = keys.indexOf(s);
+                        return `^${idx >= 0 ? vals[idx] : s}`;
+                    });
+
+                // Step 3: Clean up — but preserve ^notation and *
+                authors = rawAuthors
+                    .replace(/[†‡§¶#]/g, '')          // strip special footnote chars (not * which = corresponding)
+                    .replace(/\s+,\s*/g, ', ')
+                    .replace(/,\s*,/g, ',')
+                    .replace(/^[,\s&]+|[,\s&]+$/g, '')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+                authors = authors.replace(/\s+and\s*$/i, '').trim();
+            }
+
+            if (affLines.length > 0) {
+                // Group standalone letters (like 'a', 'b') as prefixes for the following line
+                let mergedAff = [];
+                let prefix = '';
+                for (let i = 0; i < affLines.length; i++) {
+                    const line = affLines[i].trim();
+                    if (/^[a-z]{1,3}\*?$/.test(line)) {
+                        prefix += (prefix ? ',' : '') + line;
+                    } else {
+                        mergedAff.push((prefix ? prefix + ' ' : '') + line);
+                        prefix = '';
+                    }
+                }
+                
+                let rawAff = mergedAff.join(' | ');
+                
+                // Convert affiliation superscript prefixes:
+                // "aDept. of Zoology" → "^a Dept. of Zoology"
+                // "a*Dept." or "a,bDept." → "^a,b Dept."
+                rawAff = rawAff
+                    // Leading superscript letter(s) before a capital word/asterisk in an affiliation segment
+                    .replace(/(^|\|\s*)([a-z]{1,3}(?:,[a-z]{1,3})*)\s*(\*?)\s*([A-Z])/g, (match, sep, sup, star, cap) => {
+                        return `${sep}^${sup}${star} ${cap}`;
+                    })
+                    // Unicode superscripts in affiliations
+                    .replace(/[\u1D43\u1D47\u1D9C\u1D48\u1D49\u1DA0\u1D4D\u02B0\u2071\u02B2\u1D4F\u02E1\u1D50\u207F\u1D52\u1D56\u02B3\u02E2\u1D57\u1D58\u1D5B\u02B7\u02E3\u02B8\u1DBB]/g, s => {
+                        const keys = '\u1D43\u1D47\u1D9C\u1D48\u1D49\u1DA0\u1D4D\u02B0\u2071\u02B2\u1D4F\u02E1\u1D50\u207F\u1D52\u1D56\u02B3\u02E2\u1D57\u1D58\u1D5B\u02B7\u02E3\u02B8\u1DBB';
+                        const vals = 'abcdefghijklmnoprstuvwxyz';
+                        const idx = keys.indexOf(s);
+                        return `^${idx >= 0 ? vals[idx] : s}`;
+                    })
+                    .replace(/[\u00B9\u00B2\u00B3\u2074\u2075\u2076\u2077\u2078\u2079\u2070]/g, s => {
+                        const keys = '\u00B9\u00B2\u00B3\u2074\u2075\u2076\u2077\u2078\u2079\u2070';
+                        const vals = '1234567890';
+                        const idx = keys.indexOf(s);
+                        return `^${idx >= 0 ? vals[idx] : s}`;
+                    });
+
+                affiliation = rawAff
+                    .replace(/[†‡§¶#]/g, '')
+                    .replace(/\s+/g, ' ')
+                    .replace(/\s*\|\s*/g, ' | ')
+                    .trim();
+            }
+        }
+
+        result.authors = authors;
+        result.affiliation = affiliation;
+
+        // ── TITLE (Lines between header/page number and Abstract/Authors block) ──
+        const abstractLineIdx = lines.findIndex(l => l.toLowerCase().startsWith('abstract'));
+        let title = '';
+        if (abstractLineIdx !== -1) {
+            const titleLines = [];
+            for (let i = 0; i < Math.min(abstractLineIdx, 30); i++) {
+                const line = lines[i];
+                const lower = line.toLowerCase();
+                
+                if (/^\d+$/.test(line) || lower.includes('biospectra') || lower.includes('issn') || lower.includes('vol.') || lower.includes('pp.')) continue;
+                if (lower.includes('received') || lower.includes('revised') || lower.includes('department') || lower.includes('university') || lower.includes('corresponding author')) continue;
+                if (authors && line.includes(authors)) continue;
+                if (affiliation && line.includes(affiliation)) continue;
+                
+                titleLines.push(line);
+            }
+            title = titleLines.join(' ').trim();
+        }
+
+        if (!title || title.length < 10) {
+            const firstFew = lines.slice(0, 15).filter(line => {
+                const lower = line.toLowerCase();
+                return !lower.includes('biospectra') && !lower.includes('issn') && !lower.includes('vol.') && !/^\d+$/.test(line);
+            });
+            title = firstFew[0] || '';
+        }
+
+        result.title = title;
+
+        // Basic cleanups for placeholder check
+        const badKeywords = ['biospectra', 'contributor', 'india', 'university', 'jharkhand', 'department', 'college', 'institute', 'hazards', 'science'];
+        if (result.keywords && badKeywords.some(bad => result.keywords.toLowerCase().includes(bad))) {
+            result.keywords = '';
+        }
+        const badAuthors = ['biospectra', 'contributor', 'india', 'university', 'jharkhand', 'department', 'college', 'institute', 'hazards', 'science'];
+        if (result.authors && badAuthors.some(bad => result.authors.toLowerCase().includes(bad))) {
+            result.authors = '';
+        }
+        const badTitles = ['biospectra', 'issn', '0973-7057', 'research article', 'vol.', 'pp.'];
+        if (result.title && badTitles.some(bad => result.title.toLowerCase().includes(bad))) {
+            result.title = '';
+        }
+
+        // ── AUTO-ITALICIZE SCIENTIFIC NAMES IN TITLE ──
+        // Heuristic: If any extracted keyword (>4 chars) appears in the title, wrap it in <i> tags
+        if (result.title && result.keywords) {
+            // Sort by length descending to replace longer phrases first (avoids nested <i> tags)
+            const kwArray = result.keywords.split(',')
+                .map(k => k.trim())
+                .filter(k => k.length > 4)
+                .sort((a, b) => b.length - a.length);
+                
+            kwArray.forEach(kw => {
+                const safeKw = kw.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+                // \b = word boundary, (?!([^<]+)?>) = negative lookahead to prevent double-wrapping inside existing <i> tags
+                const regex = new RegExp(`\\b(${safeKw})\\b(?!([^<]+)?>)`, 'gi');
+                result.title = result.title.replace(regex, '<i>$1</i>');
+            });
+        }
+
         return res.status(200).json({ status: 'success', data: result });
     } catch (error) {
         if (req.file && fs.existsSync(req.file.path)) {
@@ -454,276 +690,3 @@ exports.extractPdfMetadata = async (req, res) => {
 };
 
 
-
-
-const parseMetadataFromText = (text) => {
-    const lines = text.split('\n').map(l => l.replace(/[\s\xa0\u00a0]+/g, ' ').trim()).filter(l => l.length > 0);
-    const snippet = text.substring(0, 6000);
-    const flat    = snippet.replace(/[ \t]+/g, ' ').replace(/\r/g, '');
-
-    const result = { title: '', authors: '', abstract: '', keywords: '', doi: '', pages: '' };
-
-    // Pages from header "pp. 1-4"
-    const pagesMatch = flat.match(/pp\.\s*(\d+\s*[-–]\s*\d+)/i);
-    if (pagesMatch) result.pages = pagesMatch[1].replace(/\s/g, '').replace('–', '-');
-
-    // DOI
-    const doiMatch = flat.match(/DOI\s*[:\-]?\s*-?\s*(10\.\d{4,}\/\S+)/i);
-    if (doiMatch) result.doi = doiMatch[1].replace(/[.,]$/, '');
-
-    // Abstract
-    const absMatch = flat.match(/Abstract\s*[-–:]\s*([\s\S]+?)(?=\nKeywords?[\s:.–]|\nKey\s*words?[\s:.–])/i);
-    if (absMatch) result.abstract = absMatch[1].replace(/\s+/g, ' ').trim();
-    if (!result.abstract) {
-        const m2 = flat.match(/Abstract[^a-z]{0,5}([\s\S]+?)Keywords?\s*[:.–]/i);
-        if (m2) result.abstract = m2[1].replace(/\s+/g, ' ').trim();
-    }
-
-    // Keywords
-    let kwMatch = flat.match(/Key\s*words?\s*[:.–]\s*([\s\S]{1,400}?)(?=\n\s*(?:INTRODUCTION|1\.?\s*INTRODUCTION|BACKGROUND)\b|\n\s*\n)/i);
-    if (!kwMatch) {
-        kwMatch = flat.match(/Key\s*words?\s*[:.–]\s*([\s\S]+?)(?=\n[A-Z][a-z]{3,}|\n\d+\.\s+[A-Z]|INTRODUCTION|Received\s*:|$)/i);
-    }
-    if (kwMatch) {
-        const kwArray = kwMatch[1]
-            .replace(/\s+/g, ' ').replace(/\.\s*$/, '')
-            .split(/[,;]/).map(k => k.trim()).filter(Boolean);
-        result.keywords = kwArray.join(', ');
-    }
-
-    // ── AUTHORS & AFFILIATION (Scan backward from Received line) ──
-    const receivedIdx = lines.slice(0, 100).findIndex(l => {
-        const lower = l.toLowerCase();
-        return lower.includes('received') || lower.includes('revised') || lower.includes('accepted');
-    });
-
-    let authors = '';
-    let affiliation = '';
-
-    if (receivedIdx !== -1) {
-        const affKeywords = [
-            'department', 'dept', 'university', 'laboratory', 'lab', 'college',
-            'institute', 'school', 'research', 'centre', 'center', 'trust', 'academy',
-            'india', 'bihar', 'jharkhand', 'patna', 'ranchi', 'jaipur', 'rajasthan',
-            'road', 'hazaribagh', 'muzaffarpur', 'bhagalpur', 'lucknow', 'delhi',
-            'mumbai', 'kolkata', 'chennai', 'hyderabad', 'pune', 'bengaluru'
-        ];
-
-        let affLines = [];
-        let authorLines = [];
-        let stage = 'affiliation';
-
-        for (let i = receivedIdx - 1; i >= 0; i--) {
-            const line = lines[i];
-            const lower = line.toLowerCase();
-
-            // Skip journal headers, page numbers
-            if (/^\d+$/.test(line) || lower.includes('biospectra') || lower.includes('issn') || lower.includes('vol.') || lower.includes('science') && lower.length < 25) continue;
-
-            // Stop at abstract or keywords
-            if (lower.startsWith('abstract') || lower.startsWith('key word') || lower.startsWith('keywords') || lower.startsWith('introduction')) break;
-            if (lower.includes('corresponding author') || lower.includes('correspondent author') || lower.includes('phone:') || lower.includes('e-mail:') || lower.includes('@')) break;
-
-            // Stop if line has no uppercase letters and isn't very short (skip noise)
-            if (line.length > 4 && !/[A-Z]/.test(line)) break;
-
-            if (stage === 'affiliation') {
-                const isAff = affKeywords.some(w => lower.includes(w));
-                if (isAff || line.length <= 3) {
-                    affLines.unshift(line);
-                } else {
-                    stage = 'authors';
-                }
-            }
-
-            if (stage === 'authors') {
-                if (authorLines.length >= 8) break;
-                authorLines.unshift(line);
-            }
-        }
-
-        // If trailing author superscripts (e.g. 'c' for Sahay^c) got pushed into the top of affLines
-        // because they are short lines, shift them back to authorLines.
-        // Rule: If there are multiple short lines at the top of affLines, all but the last one 
-        // belong to the authors block.
-        while (affLines.length >= 2 && affLines[0].length <= 3 && affLines[1].length <= 3) {
-            authorLines.push(affLines.shift());
-        }
-
-        if (authorLines.length > 0) {
-            // Step 1: Join raw lines
-            let rawAuthors = authorLines.join(' ');
-            
-            // Step 2: Convert superscript patterns to ^notation BEFORE stripping
-            // Pattern: "Name {a,b}" where space separates name from letters
-            //   e.g. "Jha a," or "Jha a b," — space then single/double letter superscripts before comma/&
-            rawAuthors = rawAuthors
-                .replace(/([A-Z][a-z]+)\s+([a-z]{1,2})(?=[,\s&*†‡§]|$)/g, (match, name, sup) => {
-                    return `${name}^${sup}`;
-                })
-                // Unicode superscripts → ^a ^b ^1 etc.
-                .replace(/[\u1D43\u1D47\u1D9C\u1D48\u1D49\u1DA0\u1D4D\u02B0\u2071\u02B2\u1D4F\u02E1\u1D50\u207F\u1D52\u1D56\u02B3\u02E2\u1D57\u1D58\u1D5B\u02B7\u02E3\u02B8\u1DBB]/g, s => {
-                    const keys = '\u1D43\u1D47\u1D9C\u1D48\u1D49\u1DA0\u1D4D\u02B0\u2071\u02B2\u1D4F\u02E1\u1D50\u207F\u1D52\u1D56\u02B3\u02E2\u1D57\u1D58\u1D5B\u02B7\u02E3\u02B8\u1DBB';
-                    const vals = 'abcdefghijklmnoprstuvwxyz';
-                    const idx = keys.indexOf(s);
-                    return `^${idx >= 0 ? vals[idx] : s}`;
-                })
-                .replace(/[\u00B9\u00B2\u00B3\u2074\u2075\u2076\u2077\u2078\u2079\u2070]/g, s => {
-                    const keys = '\u00B9\u00B2\u00B3\u2074\u2075\u2076\u2077\u2078\u2079\u2070';
-                    const vals = '1234567890';
-                    const idx = keys.indexOf(s);
-                    return `^${idx >= 0 ? vals[idx] : s}`;
-                });
-
-            // Step 3: Clean up — but preserve ^notation and *
-            authors = rawAuthors
-                .replace(/[†‡§¶#]/g, '')          // strip special footnote chars (not * which = corresponding)
-                .replace(/\s+,\s*/g, ', ')
-                .replace(/,\s*,/g, ',')
-                .replace(/^[,\s&]+|[,\s&]+$/g, '')
-                .replace(/\s+/g, ' ')
-                .trim();
-            authors = authors.replace(/\s+and\s*$/i, '').trim();
-        }
-
-        if (affLines.length > 0) {
-            // Group standalone letters (like 'a', 'b') as prefixes for the following line
-            let mergedAff = [];
-            let prefix = '';
-            for (let i = 0; i < affLines.length; i++) {
-                const line = affLines[i].trim();
-                if (/^[a-z]{1,3}\*?$/.test(line)) {
-                    prefix += (prefix ? ',' : '') + line;
-                } else {
-                    mergedAff.push((prefix ? prefix + ' ' : '') + line);
-                    prefix = '';
-                }
-            }
-            
-            let rawAff = mergedAff.join(' | ');
-            
-            // Convert affiliation superscript prefixes:
-            // "aDept. of Zoology" → "^a Dept. of Zoology"
-            // "a*Dept." or "a,bDept." → "^a,b Dept."
-            rawAff = rawAff
-                // Leading superscript letter(s) before a capital word/asterisk in an affiliation segment
-                .replace(/(^|\|\s*)([a-z]{1,3}(?:,[a-z]{1,3})*)\s*(\.*?)\s*([A-Z])/g, (match, sep, sup, star, cap) => {
-                    return `${sep}^${sup}${star} ${cap}`;
-                })
-                // Unicode superscripts in affiliations
-                .replace(/[\u1D43\u1D47\u1D9C\u1D48\u1D49\u1DA0\u1D4D\u02B0\u2071\u02B2\u1D4F\u02E1\u1D50\u207F\u1D52\u1D56\u02B3\u02E2\u1D57\u1D58\u1D5B\u02B7\u02E3\u02B8\u1DBB]/g, s => {
-                    const keys = '\u1D43\u1D47\u1D9C\u1D48\u1D49\u1DA0\u1D4D\u02B0\u2071\u02B2\u1D4F\u02E1\u1D50\u207F\u1D52\u1D56\u02B3\u02E2\u1D57\u1D58\u1D5B\u02B7\u02E3\u02B8\u1DBB';
-                    const vals = 'abcdefghijklmnoprstuvwxyz';
-                    const idx = keys.indexOf(s);
-                    return `^${idx >= 0 ? vals[idx] : s}`;
-                })
-                .replace(/[\u00B9\u00B2\u00B3\u2074\u2075\u2076\u2077\u2078\u2079\u2070]/g, s => {
-                    const keys = '\u00B9\u00B2\u00B3\u2074\u2075\u2076\u2077\u2078\u2079\u2070';
-                    const vals = '1234567890';
-                    const idx = keys.indexOf(s);
-                    return `^${idx >= 0 ? vals[idx] : s}`;
-                });
-
-            affiliation = rawAff
-                .replace(/[†‡§¶#]/g, '')
-                .replace(/\s+/g, ' ')
-                .replace(/\s*\|\s*/g, ' | ')
-                .trim();
-        }
-    }
-
-    result.authors = authors;
-    result.affiliation = affiliation;
-
-    // ── TITLE (Lines between header/page number and Abstract/Authors block) ──
-    const abstractLineIdx = lines.findIndex(l => l.toLowerCase().startsWith('abstract'));
-    let title = '';
-    if (abstractLineIdx !== -1) {
-        const titleLines = [];
-        for (let i = 0; i < Math.min(abstractLineIdx, 30); i++) {
-            const line = lines[i];
-            const lower = line.toLowerCase();
-            
-            if (/^\d+$/.test(line) || lower.includes('biospectra') || lower.includes('issn') || lower.includes('vol.') || lower.includes('pp.')) continue;
-            if (lower.includes('received') || lower.includes('revised') || lower.includes('department') || lower.includes('university') || lower.includes('corresponding author')) continue;
-            if (authors && line.includes(authors)) continue;
-            if (affiliation && line.includes(affiliation)) continue;
-            
-            titleLines.push(line);
-        }
-        title = titleLines.join(' ').trim();
-    }
-
-    if (!title || title.length < 10) {
-        const firstFew = lines.slice(0, 15).filter(line => {
-            const lower = line.toLowerCase();
-            return !lower.includes('biospectra') && !lower.includes('issn') && !lower.includes('vol.') && !/^\d+$/.test(line);
-        });
-        title = firstFew[0] || '';
-    }
-
-    result.title = title;
-
-    // Basic cleanups for placeholder check
-    const badKeywords = ['biospectra', 'contributor', 'india', 'university', 'jharkhand', 'department', 'college', 'institute', 'hazards', 'science'];
-    if (result.keywords && badKeywords.some(bad => result.keywords.toLowerCase().includes(bad))) {
-        result.keywords = '';
-    }
-    const badAuthors = ['biospectra', 'contributor', 'india', 'university', 'jharkhand', 'department', 'college', 'institute', 'hazards', 'science'];
-    if (result.authors && badAuthors.some(bad => result.authors.toLowerCase().includes(bad))) {
-        result.authors = '';
-    }
-    const badTitles = ['biospectra', 'issn', '0973-7057', 'research article', 'vol.', 'pp.'];
-    if (result.title && badTitles.some(bad => result.title.toLowerCase().includes(bad))) {
-        result.title = '';
-    }
-
-    // ── AUTO-ITALICIZE SCIENTIFIC NAMES IN TITLE ──
-    // Heuristic: If any extracted keyword (>4 chars) appears in the title, wrap it in <i> tags
-    if (result.title && result.keywords) {
-        // Sort by length descending to replace longer phrases first (avoids nested <i> tags)
-        const kwArray = result.keywords.split(',')
-            .map(k => k.trim())
-            .filter(k => k.length > 4)
-            .sort((a, b) => b.length - a.length);
-            
-        kwArray.forEach(kw => {
-            const safeKw = kw.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
-            // \b = word boundary, (?!([^<]+)?>) = negative lookahead to prevent double-wrapping inside existing <i> tags
-            const regex = new RegExp(`\\b(${safeKw})\\b(?!([^<]+)?>)`, 'gi');
-            result.title = result.title.replace(regex, '<i>$1</i>');
-        });
-    }
-
-    return result;
-};
-
-
-exports.refetchPdfMetadata = async (req, res) => {
-    try {
-        const articleId = req.params.id;
-        const article = await Article.findById(articleId);
-        if (!article) return res.status(404).json({ message: 'Article not found' });
-        if (!article.pdfUrl) return res.status(400).json({ message: 'Article does not have an associated PDF URL' });
-
-        let buffer;
-        if (article.pdfUrl.startsWith('http')) {
-            const response = await fetch(article.pdfUrl);
-            if (!response.ok) throw new Error('Failed to download PDF from Cloudinary');
-            const arrayBuffer = await response.arrayBuffer();
-            buffer = Buffer.from(arrayBuffer);
-        } else {
-            const localPath = path.join(__dirname, '../../frontend/public', article.pdfUrl);
-            if (!fs.existsSync(localPath)) throw new Error('Local PDF file not found');
-            buffer = fs.readFileSync(localPath);
-        }
-
-        const parsed = await pdfParse(buffer);
-        const result = parseMetadataFromText(parsed.text);
-
-        return res.status(200).json({ status: 'success', data: result });
-    } catch (error) {
-        console.error('Refetch PDF Metadata Error:', error);
-        res.status(500).json({ message: error.message });
-    }
-};
