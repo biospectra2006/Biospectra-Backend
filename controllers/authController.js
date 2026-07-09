@@ -88,6 +88,7 @@ exports.login = async (req, res) => {
             return res.status(403).json({ message: 'Access restricted to administrators only.' });
         }
 
+        /*
         if (user.isMfaEnabled) {
             return res.status(200).json({
                 status: 'mfa_required',
@@ -95,6 +96,7 @@ exports.login = async (req, res) => {
                 message: 'Please complete MFA to continue'
             });
         }
+        */
 
         await createSendToken(user, 200, req, res);
     } catch (error) {
