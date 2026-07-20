@@ -20,17 +20,25 @@ exports.globalSearch = async (req, res) => {
                 { keywords: { $in: [queryRegex] } }
             ]
         })
-        .select('title authors abstract doi category issue createdAt')
+        .select('title authors abstract doi pdfUrl category issue createdAt')
         .populate({
             path: 'category',
             select: 'title issue',
             populate: {
                 path: 'issue',
-                select: 'order year',
+                select: 'title order year',
                 populate: {
                     path: 'year',
                     select: 'year'
                 }
+            }
+        })
+        .populate({
+            path: 'issue',
+            select: 'title year',
+            populate: {
+                path: 'year',
+                select: 'year'
             }
         })
         .limit(10)
