@@ -18,8 +18,7 @@ const articleSchema = new mongoose.Schema({
         type: String
     },
     pdfUrl: {
-        type: String,
-        required: true
+        type: String
     },
     cloudinaryId: {
         type: String

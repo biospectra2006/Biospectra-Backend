@@ -27,14 +27,14 @@ const deleteArticleFile = async (article) => {
 
 exports.uploadArticle = async (req, res) => {
     try {
-        const { categoryId, title, authors, affiliation, abstract, keywords, pages, doi } = req.body;
+        const { categoryId, title, authors, affiliation, abstract, keywords, pages, doi, noPdf } = req.body;
         
-        if (!req.file) {
+        if (!req.file && noPdf !== 'true') {
             return res.status(400).json({ message: 'No file uploaded' });
         }
 
         // Validate PDF magic bytes
-        if (!validateFileContent(req.file.path, [{ magic: PDF_MAGIC }])) {
+        if (req.file && !validateFileContent(req.file.path, [{ magic: PDF_MAGIC }])) {
             fs.unlinkSync(req.file.path);
             return res.status(400).json({ message: 'File is not a valid PDF' });
         }
@@ -86,33 +86,35 @@ exports.uploadArticle = async (req, res) => {
         let pdfUrl = '';
         let cloudinaryId = '';
 
-        try {
-            console.log('Attempting Cloudinary upload for article:', req.file.filename);
-            const result = await cloudinary.uploader.upload(req.file.path, {
-                folder: 'spectra_articles',
-                resource_type: 'raw'
-            });
-            pdfUrl = result.secure_url;
-            cloudinaryId = result.public_id;
-            
-            // Delete temp file asynchronously
-            fs.unlink(req.file.path, (err) => {
-                if (err) console.error('Failed to delete temp file:', err);
-            });
-        } catch (cloudinaryError) {
-            console.warn('Cloudinary upload failed, falling back to local storage:', cloudinaryError.message);
-            
-            // Fallback: move file to permanent local storage
-            const targetDir = path.join(__dirname, '../../frontend/public/pdf biospectra');
-            if (!fs.existsSync(targetDir)) {
-                fs.mkdirSync(targetDir, { recursive: true });
+        if (req.file) {
+            try {
+                console.log('Attempting Cloudinary upload for article:', req.file.filename);
+                const result = await cloudinary.uploader.upload(req.file.path, {
+                    folder: 'spectra_articles',
+                    resource_type: 'raw'
+                });
+                pdfUrl = result.secure_url;
+                cloudinaryId = result.public_id;
+                
+                // Delete temp file asynchronously
+                fs.unlink(req.file.path, (err) => {
+                    if (err) console.error('Failed to delete temp file:', err);
+                });
+            } catch (cloudinaryError) {
+                console.warn('Cloudinary upload failed, falling back to local storage:', cloudinaryError.message);
+                
+                // Fallback: move file to permanent local storage
+                const targetDir = path.join(__dirname, '../../frontend/public/pdf biospectra');
+                if (!fs.existsSync(targetDir)) {
+                    fs.mkdirSync(targetDir, { recursive: true });
+                }
+                
+                const targetPath = path.join(targetDir, req.file.filename);
+                fs.renameSync(req.file.path, targetPath);
+                
+                pdfUrl = `/pdf biospectra/${req.file.filename}`;
+                cloudinaryId = '';
             }
-            
-            const targetPath = path.join(targetDir, req.file.filename);
-            fs.renameSync(req.file.path, targetPath);
-            
-            pdfUrl = `/pdf biospectra/${req.file.filename}`;
-            cloudinaryId = '';
         }
 
         const newArticle = new Article({
