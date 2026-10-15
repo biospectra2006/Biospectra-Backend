@@ -209,30 +209,60 @@ exports.deleteArticle = async (req, res) => {
 
 exports.getJournalTree = async (req, res) => {
     try {
-        const years = await Year.find().sort({ year: -1 });
-        const tree = await Promise.all(years.map(async (year) => {
-            const issues = await Issue.find({ year: year._id }).sort({ order: 1 });
-            const populatedIssues = await Promise.all(issues.map(async (issue) => {
-                const categories = await Category.find({ issue: issue._id }).sort({ createdAt: 1 });
-                const populatedCategories = await Promise.all(categories.map(async (cat) => {
-                    const articles = await Article.find({ category: cat._id });
-                    
-                    // Sort articles by page number numerically
-                    articles.sort((a, b) => {
-                        const getStartPage = (pagesStr) => {
-                            if (!pagesStr) return 999999;
-                            const match = pagesStr.match(/^(\d+)/);
-                            return match ? parseInt(match[1], 10) : 999999;
-                        };
-                        return getStartPage(a.pages) - getStartPage(b.pages);
-                    });
-                    
-                    return { ...cat.toObject(), articles };
-                }));
-                return { ...issue.toObject(), categories: populatedCategories };
-            }));
-            return { ...year.toObject(), issues: populatedIssues };
-        }));
+        // Public frontend only sees published issues & volumes; admin sees everything
+        const isAdminRequest = !!(req.headers.authorization);
+        const yearFilter = isAdminRequest ? {} : { isPublished: { $ne: false } };
+        const issueFilter = isAdminRequest ? {} : { isPublished: { $ne: false } };
+
+        const [years, issues, categories, articles] = await Promise.all([
+            Year.find(yearFilter).sort({ year: -1 }).lean(),
+            Issue.find(issueFilter).sort({ order: 1 }).lean(),
+            Category.find().sort({ createdAt: 1 }).lean(),
+            Article.find().lean()
+        ]);
+
+        // Group articles by category
+        const articlesByCat = {};
+        articles.forEach(art => {
+            const catId = art.category.toString();
+            if (!articlesByCat[catId]) articlesByCat[catId] = [];
+            articlesByCat[catId].push(art);
+        });
+
+        // Sort articles in each category
+        const getStartPage = (pagesStr) => {
+            if (!pagesStr) return 999999;
+            const match = pagesStr.match(/^(\d+)/);
+            return match ? parseInt(match[1], 10) : 999999;
+        };
+        for (const catId in articlesByCat) {
+            articlesByCat[catId].sort((a, b) => getStartPage(a.pages) - getStartPage(b.pages));
+        }
+
+        // Group categories by issue
+        const categoriesByIssue = {};
+        categories.forEach(cat => {
+            const issueId = cat.issue.toString();
+            if (!categoriesByIssue[issueId]) categoriesByIssue[issueId] = [];
+            cat.articles = articlesByCat[cat._id.toString()] || [];
+            categoriesByIssue[issueId].push(cat);
+        });
+
+        // Group issues by year
+        const issuesByYear = {};
+        issues.forEach(issue => {
+            const yearId = issue.year.toString();
+            if (!issuesByYear[yearId]) issuesByYear[yearId] = [];
+            issue.categories = categoriesByIssue[issue._id.toString()] || [];
+            issuesByYear[yearId].push(issue);
+        });
+
+        // Assemble tree
+        const tree = years.map(year => {
+            year.issues = issuesByYear[year._id.toString()] || [];
+            return year;
+        });
+
         res.json(tree);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -246,12 +276,12 @@ exports.initYear = async (req, res) => {
         let yearDoc = await Year.findOne({ year });
         if (yearDoc) return res.status(400).json({ message: 'Year already initialized' });
         
-        yearDoc = new Year({ year });
+        yearDoc = new Year({ year, isPublished: false });
         await yearDoc.save();
 
         // Auto-create 2 issues for the year
-        const issue1 = new Issue({ year: yearDoc._id, title: `Issue 1 (Jan-Jun)`, order: 1 });
-        const issue2 = new Issue({ year: yearDoc._id, title: `Issue 2 (Jul-Dec)`, order: 2 });
+        const issue1 = new Issue({ year: yearDoc._id, title: `Issue 1 (Jan-Jun)`, order: 1, isPublished: false });
+        const issue2 = new Issue({ year: yearDoc._id, title: `Issue 2 (Jul-Dec)`, order: 2, isPublished: false });
         await Promise.all([issue1.save(), issue2.save()]);
 
         res.status(201).json(yearDoc);
@@ -415,6 +445,36 @@ exports.updateIssue = async (req, res) => {
         res.json(issue);
     } catch (error) {
         console.error('Update Issue Error:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// Toggle publish/draft status for an issue
+exports.toggleIssuePublish = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const issue = await Issue.findById(id);
+        if (!issue) return res.status(404).json({ message: 'Issue not found' });
+        issue.isPublished = !issue.isPublished;
+        await issue.save();
+        res.json({ _id: issue._id, isPublished: issue.isPublished, title: issue.title });
+    } catch (error) {
+        console.error('Toggle Issue Publish Error:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// Toggle publish/draft status for a volume (year)
+exports.toggleYearPublish = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const yearDoc = await Year.findById(id);
+        if (!yearDoc) return res.status(404).json({ message: 'Volume not found' });
+        yearDoc.isPublished = !yearDoc.isPublished;
+        await yearDoc.save();
+        res.json({ _id: yearDoc._id, isPublished: yearDoc.isPublished, year: yearDoc.year });
+    } catch (error) {
+        console.error('Toggle Year Publish Error:', error);
         res.status(500).json({ message: error.message });
     }
 };

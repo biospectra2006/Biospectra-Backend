@@ -42,37 +42,7 @@ app.use(passport.initialize());
 // 4. Trust proxy
 app.set('trust proxy', 1);
 
-// 5. Rate Limiting
-const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 1000,
-    message: 'Too many requests from this IP, please try again after 15 minutes',
-    standardHeaders: true,
-    legacyHeaders: false,
-});
-app.use('/api/', limiter);
-
-// Strict rate limiter for auth routes (brute-force protection)
-const authLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 20, // Increased slightly for better UX
-    message: 'Too many login attempts. Please try again after 15 minutes.',
-    standardHeaders: true,
-    legacyHeaders: false,
-});
-// Apply only to login endpoints in routes, but for now let's use it on specific paths here
-app.use('/api/auth/login', authLimiter);
-app.use('/api/auth/login-mfa', authLimiter);
-
-// 6. Data Sanitization
-app.use((req, res, next) => {
-    req.body = mongoSanitize(req.body);
-    req.query = mongoSanitize(req.query);
-    req.params = mongoSanitize(req.params);
-    next();
-});
-
-// 7. CORS
+// 5. CORS (Must be before rate limiter so error & preflight responses include CORS headers)
 const allowedOrigins = [
     process.env.FRONTEND_URL || 'http://localhost:3000',
     'http://127.0.0.1:3000',
@@ -88,9 +58,43 @@ app.use(cors({
             callback(new Error('Not allowed by CORS'));
         }
     },
-    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
     credentials: true
 }));
+
+// 6. Rate Limiting
+const isDev = process.env.NODE_ENV !== 'production';
+
+const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: isDev ? 10000 : 1000,
+    message: { status: 'fail', message: 'Too many requests from this IP, please try again after 15 minutes' },
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req) => req.method === 'OPTIONS'
+});
+app.use('/api/', limiter);
+
+// Strict rate limiter for auth routes (brute-force protection)
+const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: isDev ? 200 : 30,
+    message: { status: 'fail', message: 'Too many login attempts. Please try again after 15 minutes.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req) => req.method === 'OPTIONS'
+});
+app.use('/api/auth/login', authLimiter);
+app.use('/api/auth/login-mfa', authLimiter);
+
+// 7. Data Sanitization
+app.use((req, res, next) => {
+    req.body = mongoSanitize(req.body);
+    req.query = mongoSanitize(req.query);
+    req.params = mongoSanitize(req.params);
+    next();
+});
 
 app.use(express.json({ limit: '10kb' }));
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
@@ -109,6 +113,8 @@ app.use('/api/about', require('./routes/aboutRoutes'));
 app.use('/api/editorial', require('./routes/editorialRoutes'));
 app.use('/api/gallery', require('./routes/galleryRoutes'));
 app.use('/api/search', require('./routes/searchRoutes'));
+app.use('/api/settings', require('./routes/settingsRoutes'));
+app.use('/api/guidelines', require('./routes/guidelineRoutes'));
 
 // Special Public Route for articles (index view)
 // Note: We protect only the modification routes in the routes themselves, 

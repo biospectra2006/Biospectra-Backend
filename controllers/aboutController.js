@@ -1,4 +1,6 @@
 const About = require('../models/About');
+const { cloudinary } = require('../config/cloudinary');
+const fs = require('fs');
 
 // Get all sections
 exports.getAllSections = async (req, res) => {
@@ -12,8 +14,23 @@ exports.getAllSections = async (req, res) => {
 
 // Create a section
 exports.createSection = async (req, res) => {
-    const section = new About(req.body);
     try {
+        const data = { ...req.body };
+        if (req.file) {
+            try {
+                const result = await cloudinary.uploader.upload(req.file.path, {
+                    folder: 'spectra_about',
+                    transformation: [{ quality: 'auto:good', fetch_format: 'webp' }]
+                });
+                data.images = [result.secure_url];
+                fs.unlink(req.file.path, (err) => {
+                    if (err) console.error('Failed to delete temp file:', err);
+                });
+            } catch (err) {
+                console.error('Cloudinary upload error:', err);
+            }
+        }
+        const section = new About(data);
         const newSection = await section.save();
         res.status(201).json(newSection);
     } catch (err) {
@@ -24,7 +41,32 @@ exports.createSection = async (req, res) => {
 // Update a section
 exports.updateSection = async (req, res) => {
     try {
-        const updatedSection = await About.findByIdAndUpdate(req.params.id, req.body, { new: true });
+        const updateData = { ...req.body };
+        if (req.file) {
+            try {
+                const result = await cloudinary.uploader.upload(req.file.path, {
+                    folder: 'spectra_about',
+                    transformation: [{ quality: 'auto:good', fetch_format: 'webp' }]
+                });
+                updateData.images = [result.secure_url];
+                fs.unlink(req.file.path, (err) => {
+                    if (err) console.error('Failed to delete temp file:', err);
+                });
+            } catch (err) {
+                console.error('Cloudinary upload error in about:', err);
+            }
+        }
+
+        // If user edited metrics section, sync Settings.sjifNumber
+        if (updateData.sectionType === 'metrics' && updateData.content) {
+            const Settings = require('../models/Settings');
+            const match = updateData.content.match(/([0-9]+\.[0-9]+)/);
+            if (match) {
+                await Settings.findOneAndUpdate({}, { sjifNumber: match[1] }, { upsert: true });
+            }
+        }
+
+        const updatedSection = await About.findByIdAndUpdate(req.params.id, updateData, { new: true });
         res.json(updatedSection);
     } catch (err) {
         res.status(400).json({ message: err.message });

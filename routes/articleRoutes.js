@@ -19,6 +19,8 @@ router.post('/issue', protect, requireElevatedSession, articleController.createI
 router.post('/category', protect, requireElevatedSession, articleController.createCategory);
 router.put('/:id', protect, requireElevatedSession, articleController.updateArticle);
 router.put('/issue/:id', protect, requireElevatedSession, articleController.updateIssue);
+router.put('/issue/:id/toggle-publish', protect, requireElevatedSession, articleController.toggleIssuePublish);
+router.put('/year/:id/toggle-publish', protect, requireElevatedSession, articleController.toggleYearPublish);
 router.delete('/:id', protect, requireElevatedSession, articleController.deleteArticle);
 router.delete('/category/:id', protect, requireElevatedSession, articleController.deleteCategory);
 router.delete('/issue/:id', protect, requireElevatedSession, articleController.deleteIssue);

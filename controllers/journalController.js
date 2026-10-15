@@ -8,12 +8,12 @@ const Article = require('../models/Article');
 exports.createYear = async (req, res) => {
     try {
         const { year } = req.body;
-        const newYear = new Year({ year });
+        const newYear = new Year({ year, isPublished: false });
         await newYear.save();
         
-        // Auto-create 2 issues for the year
-        const issue1 = new Issue({ year: newYear._id, title: `Issue 1 (Jan-Jun) ${year}`, order: 1 });
-        const issue2 = new Issue({ year: newYear._id, title: `Issue 2 (Jul-Dec) ${year}`, order: 2 });
+        // Auto-create 2 issues for the year (Draft by default)
+        const issue1 = new Issue({ year: newYear._id, title: `Issue 1 (Jan-Jun) ${year}`, order: 1, isPublished: false });
+        const issue2 = new Issue({ year: newYear._id, title: `Issue 2 (Jul-Dec) ${year}`, order: 2, isPublished: false });
         await issue1.save();
         await issue2.save();
 
@@ -25,7 +25,9 @@ exports.createYear = async (req, res) => {
 
 exports.getYears = async (req, res) => {
     try {
-        const years = await Year.find().sort({ year: -1 });
+        const isAdmin = !!(req.headers.authorization);
+        const filter = isAdmin ? {} : { isPublished: { $ne: false } };
+        const years = await Year.find(filter).sort({ year: -1 });
         res.json(years);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -35,7 +37,16 @@ exports.getYears = async (req, res) => {
 // Issue Controllers
 exports.getIssuesByYear = async (req, res) => {
     try {
-        const issues = await Issue.find({ year: req.params.yearId }).sort({ order: 1 });
+        const isAdmin = !!(req.headers.authorization);
+        const year = await Year.findById(req.params.yearId);
+        if (!isAdmin && year && year.isPublished === false) {
+            return res.json([]);
+        }
+        const filter = { year: req.params.yearId };
+        if (!isAdmin) {
+            filter.isPublished = { $ne: false };
+        }
+        const issues = await Issue.find(filter).sort({ order: 1 });
         res.json(issues);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -87,18 +98,35 @@ exports.getTopicsByCategory = async (req, res) => {
 // Full Tree Getter — single aggregation pipeline (no N+1 loops)
 exports.getFullJournalTree = async (req, res) => {
     try {
-        const result = await Year.aggregate([
+        const isAdmin = !!(req.headers.authorization);
+        const pipeline = [];
+        if (!isAdmin) {
+            pipeline.push({ $match: { isPublished: { $ne: false } } });
+        }
+        pipeline.push(
             { $sort: { year: -1 } },
             {
                 $lookup: {
                     from: 'issues',
-                    localField: '_id',
-                    foreignField: 'year',
+                    let: { yearId: '$_id' },
+                    pipeline: [
+                        {
+                            $match: {
+                                $expr: { $eq: ['$year', '$$yearId'] },
+                                ...(isAdmin ? {} : { isPublished: { $ne: false } })
+                            }
+                        },
+                        { $sort: { order: 1 } }
+                    ],
                     as: 'issues'
                 }
             },
             { $unwind: { path: '$issues', preserveNullAndEmptyArrays: true } },
-            { $sort: { year: -1, 'issues.order': 1 } },
+            { $sort: { year: -1, 'issues.order': 1 } }
+        );
+
+        const result = await Year.aggregate([
+            ...pipeline,
             {
                 $lookup: {
                     from: 'categories',
@@ -163,11 +191,18 @@ exports.getIssueData = async (req, res) => {
         const yearNum = parseInt(req.params.year);   // e.g. 2021
         const orderNum = parseInt(req.params.order); // 1 or 2
 
+        const isAdmin = !!(req.headers.authorization);
         const yearDoc = await Year.findOne({ year: yearNum });
         if (!yearDoc) return res.status(404).json({ message: 'Year not found' });
+        if (!isAdmin && yearDoc.isPublished === false) {
+            return res.status(404).json({ message: 'Volume is currently hidden or in draft' });
+        }
 
         const issueDoc = await Issue.findOne({ year: yearDoc._id, order: orderNum });
         if (!issueDoc) return res.status(404).json({ message: 'Issue not found' });
+        if (!isAdmin && issueDoc.isPublished === false) {
+            return res.status(404).json({ message: 'Issue is currently hidden or in draft' });
+        }
 
         // Fetch all categories for this issue in one query
         const categories = await Category.find({ issue: issueDoc._id }).sort({ createdAt: 1 }).lean();

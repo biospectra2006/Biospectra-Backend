@@ -14,6 +14,10 @@ const issueSchema = new mongoose.Schema({
         type: Number,
         required: true
     },
+    isPublished: {
+        type: Boolean,
+        default: false  // Draft by default — must be explicitly published to appear on the live site
+    },
     pdfs: [{
         title: { type: String, required: true },
         pdfUrl: { type: String, required: true },
@@ -22,3 +26,4 @@ const issueSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 module.exports = mongoose.model('Issue', issueSchema);
+
