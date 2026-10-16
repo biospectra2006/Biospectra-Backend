@@ -22,6 +22,7 @@ exports.updateSettings = async (req, res) => {
     try {
         const { 
             sjifNumber,
+            sjifYear,
             contactPhone,
             contactWhatsapp,
             contactEmail,
@@ -48,6 +49,7 @@ exports.updateSettings = async (req, res) => {
             }
         }
 
+        if (sjifYear !== undefined) settings.sjifYear = sjifYear;
         if (contactPhone !== undefined) settings.contactPhone = contactPhone;
         if (contactWhatsapp !== undefined) settings.contactWhatsapp = contactWhatsapp;
         if (contactEmail !== undefined) settings.contactEmail = contactEmail;

@@ -5,6 +5,10 @@ const SettingsSchema = new mongoose.Schema({
     type: String,
     default: '8.546'
   },
+  sjifYear: {
+    type: String,
+    default: '2023'
+  },
   heroImageUrl: {
     type: String,
     default: ''
